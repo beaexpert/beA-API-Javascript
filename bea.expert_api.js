@@ -3,7 +3,7 @@
     beA.expert BEA-API / EXPERIMENTAL
     ---------------------------------
     Demo script not intented for production
-    Version 1.10 / 09.09.2021
+    Version 1.11 / 22.09.2021
     (c) be next GmbH (Licence: GPL-2.0 & BSD-3-Clause)
     https://opensource.org/licenses/GPL-2.0
     https://opensource.org/licenses/BSD-3-Clause
