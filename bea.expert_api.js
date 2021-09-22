@@ -1166,25 +1166,16 @@ function bea_encrypt_message(
   return "";
 }
 
-function bea_cleanup_message(
-  token,
-  postboxSafeId,
-  msg_infos,
-  msg_att,
-  sessionKey
-) {
-  var req_json = bea_encrypt_message(
-    token,
-    postboxSafeId,
-    msg_infos,
-    msg_att,
-    sessionKey
-  );
+export function bea_cleanup_message(messageToken) {
+  var req_json = {
+    messageToken: messageToken,
+  };
   var request = new XMLHttpRequest();
   request.open("POST", "/bea_cleanup_message", false);
   request.setRequestHeader("Content-type", "application/x-www-form-urlencoded");
 
-  var post_data = "j=" + encodeURI(btoa(JSON.stringify(req_json)));
+  //var post_data = 'j=' + encodeURI(btoa(JSON.stringify(req_json)));
+  var post_data = "j=" + encodeURI(btoa(encode_utf8(JSON.stringify(req_json))));
   request.send(post_data);
   if (request.status === 200) {
     return request.responseText;
