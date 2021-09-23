@@ -1166,7 +1166,7 @@ function bea_encrypt_message(
   return "";
 }
 
-export function bea_cleanup_message(messageToken) {
+function bea_cleanup_message(messageToken) {
   var req_json = {
     messageToken: messageToken,
   };
