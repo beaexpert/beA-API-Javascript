@@ -3,7 +3,7 @@
     beA.expert BEA-API / EXPERIMENTAL
     ---------------------------------
     Demo script not intented for production
-    Version 1.11 / 22.09.2021
+    Version 1.16 / 05.11.2021
     (c) be next GmbH (Licence: GPL-2.0 & BSD-3-Clause)
     https://opensource.org/licenses/GPL-2.0
     https://opensource.org/licenses/BSD-3-Clause
@@ -1097,6 +1097,241 @@ function bea_init_message(token, postboxSafeId, msg_infos, sessionKey) {
   return "";
 }
 
+function bea_init_message_draft(token, messageId, sessionKey) {
+  var request = new XMLHttpRequest();
+  request.open("POST", uri_api + "/bea_init_message_draft", false);
+  request.setRequestHeader("Content-type", "application/x-www-form-urlencoded");
+  request.setRequestHeader("bex-ident", "loadtest");
+  request.setRequestHeader("Access-Control-Allow-Origin", "*");
+
+  var req_json_str =
+    "{" +
+    '"token" : "' +
+    token +
+    '",' +
+    '"messageId" : "' +
+    messageId +
+    '"' +
+    "}";
+
+  var post_data = "j=" + encodeURI(btoa(encode_utf8(req_json_str)));
+  request.send(post_data);
+  if (request.status === 200) {
+    var res = request.responseText;
+    console.log(res);
+
+    var json_msg = JSON.parse(res);
+    var decryptedObjects = [];
+    var attachmentsKey = [];
+    json_msg.msg_infos.encryptedObjects.forEach((element) => {
+      //decrypt the objectKey with sessionKey
+      var objectKey = "";
+      var decipher = forge.cipher.createDecipher("AES-GCM", sessionKey);
+      decipher.start({
+        iv: atob(element.encKeyInfo.encKey.iv),
+        tag: atob(element.encKeyInfo.encKey.tag),
+      });
+
+      decipher.update(
+        forge.util.createBuffer(atob(element.encKeyInfo.encKey.value))
+      );
+      var pass = decipher.finish();
+
+      if (pass) {
+        console.log(decipher.output.data);
+        objectKey = decipher.output.data;
+      }
+
+      var data = "";
+
+      //decrypt encryptedObject with objectKey
+      if (element.enc_iv == "" && element.enc_tag == "") {
+        data = decrypt_aes256cbc(element.enc_data, btoa(objectKey));
+        if (data != "") {
+          pass = true;
+        } else {
+          pass = false;
+        }
+      } else {
+        decipher = forge.cipher.createDecipher("AES-GCM", objectKey);
+        decipher.start({
+          iv: atob(element.enc_iv),
+          tag: atob(element.enc_tag),
+        });
+
+        decipher.update(forge.util.createBuffer(atob(element.enc_data)));
+        pass = decipher.finish();
+        data = decipher.output.data;
+      }
+
+      if (pass) {
+        console.log(data);
+
+        decryptedObjects.push({
+          name: element.enc_name,
+          data: data,
+        });
+
+        if (element.enc_name == "project_coco") {
+          var parser = new DOMParser();
+          var xmlDoc = parser.parseFromString(
+            '<?xml version="1.0" encoding="UTF-8"?>' + data,
+            "text/xml"
+          );
+          //var osci_content = xmlDoc.getElementsByTagName("osci:Content");
+          var ds_MgmtData = xmlDoc.getElementsByTagName("ds:MgmtData");
+          var xenc_CipherReference = xmlDoc.getElementsByTagName(
+            "xenc:CipherReference"
+          );
+          var key_alt = "";
+
+          for (var i = 0; i < xenc_CipherReference.length; i++) {
+            var tmp_name = xenc_CipherReference[i].attributes["URI"].value;
+            if (tmp_name.substr(0, 4) == "cid:") {
+              tmp_name = tmp_name.substr(4);
+            }
+            var tmp_key = ds_MgmtData[i].textContent;
+            if (key_alt == "") {
+              key_alt = tmp_key;
+            }
+
+            //use same key; if len differs
+            if (xenc_CipherReference.length != ds_MgmtData.length) {
+              tmp_key = key_alt;
+            }
+
+            attachmentsKey.push({
+              name: tmp_name,
+              key: tmp_key,
+            });
+          }
+        }
+      }
+    });
+
+    json_msg.msg_infos.encryptedObjects = null;
+
+    //Decrypt the attachments
+    var decryptedAttachments = [];
+    json_msg.msg_infos.attachments.forEach((element) => {
+      var data = "";
+      var att_key = "";
+
+      for (var i = 0; i < attachmentsKey.length; i++) {
+        if (attachmentsKey[i].name == element.reference) {
+          att_key = atob(attachmentsKey[i].key);
+        }
+      }
+
+      if (
+        element.symEncAlgorithm ==
+          "http://www.w3.org/2001/04/xmlenc#aes256-cbc" ||
+        (element.iv == "" && element.tag == "")
+      ) {
+        if (att_key == "") {
+          data = decrypt_aes256cbc(element.data, element.key, element.iv);
+        } else {
+          data = decrypt_aes256cbc(element.data, btoa(att_key), element.iv);
+        }
+      } else {
+        var decipher = forge.cipher.createDecipher("AES-GCM", att_key);
+        decipher.start({
+          iv: atob(element.iv),
+          tag: atob(element.tag),
+        });
+
+        decipher.update(forge.util.createBuffer(atob(element.data)));
+        var pass = decipher.finish();
+
+        if (pass) {
+          data = decipher.output.data;
+        }
+      }
+
+      decryptedAttachments.push({
+        reference: element.reference,
+        data: data,
+        type: element.type,
+        sizeKB: element.sizeKB,
+        hashValue: element.hashValue,
+      });
+    });
+
+    //Decrypt the key
+    var key = "";
+    var messageToken = json_msg.messageToken;
+    var decipher = forge.cipher.createDecipher("AES-GCM", sessionKey);
+    decipher.start({
+      iv: atob(json_msg.key.iv),
+      tag: atob(json_msg.key.tag),
+    });
+
+    decipher.update(forge.util.createBuffer(atob(json_msg.key.value)));
+    var pass = decipher.finish();
+
+    if (pass) {
+      key = decipher.output.data;
+    }
+
+    //Decrypt the subject
+    var dec_subject = "";
+    if (json_msg.msg_infos.betreff.value != "") {
+      var decipher = forge.cipher.createDecipher("AES-GCM", sessionKey);
+      decipher.start({
+        iv: atob(json_msg.msg_infos.betreff.iv),
+        tag: atob(json_msg.msg_infos.betreff.tag),
+      });
+
+      decipher.update(
+        forge.util.createBuffer(atob(json_msg.msg_infos.betreff.value))
+      );
+      var pass = decipher.finish();
+
+      if (pass) {
+        console.log(decode_utf8(decipher.output.data));
+        dec_subject = decode_utf8(decipher.output.data);
+      }
+    }
+
+    var msg_attachments_data = [];
+    var msg_attachments_info = [];
+    decryptedAttachments.forEach((element) => {
+      msg_attachments_data.push({
+        name: element.reference,
+        data: btoa(element.data),
+        att_type: element.type,
+      });
+      msg_attachments_info.push(element.reference);
+    });
+
+    //get receivers
+    var new_receivers = [];
+    json_msg.receivers_full = [];
+    if (
+      json_msg.msg_infos != null &&
+      json_msg.msg_infos != undefined &&
+      json_msg.msg_infos.receivers != null &&
+      json_msg.msg_infos.receivers != undefined &&
+      json_msg.msg_infos.receivers.length != 0
+    ) {
+      json_msg.msg_infos.receivers.forEach((element) => {
+        new_receivers.push(element.safeId);
+      });
+
+      json_msg.receivers = new_receivers;
+    }
+
+    json_msg.msg_infos.betreff = dec_subject;
+    json_msg.msg_infos.attachments = msg_attachments_info;
+    json_msg.key = btoa(key);
+    json_msg.msg_attachments_data = msg_attachments_data;
+
+    //Important: get msg_text and read xjustiz to complete the infos
+    console.warn(JSON.stringify(json_msg));
+    return JSON.stringify(json_msg);
+  }
+}
+
 function bea_encrypt_message(
   token,
   postboxSafeId,
@@ -1166,7 +1401,7 @@ function bea_encrypt_message(
   return "";
 }
 
-function bea_cleanup_message(messageToken) {
+export function bea_cleanup_message(messageToken) {
   var req_json = {
     messageToken: messageToken,
   };
@@ -1793,4 +2028,76 @@ function send_test_nachricht_message(token, safeId, sessionKey) {
     msg_att,
     sessionKey
   );
+}
+
+function example_edit_message(token, safeId, sessionKey) {
+  var msg_infos_draft = {
+    betreff: "Subject saveMessage",
+    aktz_sender: "sender",
+    aktz_rcv: "rcv",
+    msg_text: "This is a simple test message.",
+    is_eeb: false,
+    dringend: false,
+    pruefen: false,
+    receivers: ["DE.Justiztest.dd380ae8-10f8-4b5f-8dce-e54b80722409.a80d"],
+    attachments: ["myText1.txt"],
+    is_eeb_response: false,
+    eeb_fremdid: "",
+    eeb_date: "",
+    verfahrensgegenstand: "",
+    eeb_erforderlich: false,
+    eeb_accept: false,
+    xj: true,
+    nachrichten_typ: "ALLGEMEINE_NACHRICHT",
+  };
+
+  var msg_att = {
+    attachments: [
+      {
+        name: "myText1.txt",
+        data: "TXkgdGV4dCAx",
+        att_type: "",
+      },
+    ],
+  };
+
+  var res_saveMessage = bea_save_message(
+    token,
+    safeId,
+    msg_infos_draft,
+    msg_att,
+    sessionKey
+  );
+  var json_save_msg = JSON.parse(res_saveMessage);
+  var init_draft_message = bea_init_message_draft(
+    token,
+    json_save_msg.messageId,
+    sessionKey
+  );
+  var init_draft_message_json = JSON.parse(init_draft_message);
+
+  var draft_msg_infos = init_draft_message_json.msg_infos;
+  var draft_attachments = {
+    attachments: init_draft_message_json.msg_attachments_data,
+  };
+  var messageDraft = JSON.stringify({
+    key: init_draft_message_json.key,
+    messageToken: init_draft_message_json.messageToken,
+  });
+
+  draft_msg_infos.betreff = "Subject sendMessage";
+  draft_msg_infos.msg_text = "Message edited.";
+  draft_msg_infos.receivers = [
+    "DE.Justiztest.dd380ae8-10f8-4b5f-8dce-e54b80722409.a80d",
+  ];
+  var res_draft_sendMessage = bea_send_message(
+    token,
+    safeId,
+    draft_msg_infos,
+    draft_attachments,
+    sessionKey,
+    messageDraft
+  );
+  console.warn(res_draft_sendMessage);
+  return;
 }
